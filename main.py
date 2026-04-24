@@ -7,21 +7,24 @@ FMP_KEY = "zKQqtEP4FNoej8dQ2x8VzCOZN4RgqCHH"
 
 st.set_page_config(page_title="Frontier Infinite", layout="wide")
 st.title("🛡️ Frontier Infinite Discovery")
-st.info("Status: Live FMP Feed | TSX & US Only | Under $150 | Zero Hard-Coded Lists")
+st.info("Protocol: Free-Tier Stable Feed | TSX & US Only | Under $150 | No ETFs")
 
-def get_dynamic_leaders(is_cad):
-    """Uses FMP Screener for pure market discovery."""
-    exchange = 'TSX' if is_cad else 'NYSE,NASDAQ'
-    # API Protocol: price < 150, No ETFs, specific exchange
-    url = f"https://financialmodelingprep.com/api/v3/stock-screener?priceLowerThan=150&isEtf=false&exchange={exchange}&limit=12&apikey={FMP_KEY}"
+def get_market_list():
+    """Fetches a broad list of active stocks available on the free tier."""
+    # This endpoint is more stable for free users than the 'Screener'
+    url = f"https://financialmodelingprep.com/api/v3/stock/list?apikey={FMP_KEY}"
     try:
         r = requests.get(url)
-        return r.json()
+        data = r.json()
+        if isinstance(data, dict) and ("Error" in data or "Error Message" in data):
+            st.error(f"API Error: {data.get('Error Message', 'Limit Reached')}")
+            return []
+        return data # This is a list of dictionaries
     except:
         return []
 
 def get_history(symbol):
-    """Fetches 2-year 'Staircase' data."""
+    """Fetches 2-year history."""
     url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?serietype=line&apikey={FMP_KEY}"
     try:
         r = requests.get(url)
@@ -30,44 +33,51 @@ def get_history(symbol):
             df = pd.DataFrame(data["historical"])
             df['date'] = pd.to_datetime(df['date'])
             df = df.set_index('date').sort_index()
-            return df['close'].tail(500) # ~2 years
+            return df['close'].tail(500)
     except:
         return None
     return None
 
-tab_cad, tab_usd = st.tabs(["🇨🇦 Canadian Discovery (TSX)", "🇺🇸 US Discovery (NYSE/NASDAQ)"])
+# Load the master list once
+with st.spinner("Connecting to Exchange Feed..."):
+    raw_data = get_market_list()
 
-def render_market(is_cad):
-    with st.spinner(f"Scanning {'TSX' if is_cad else 'US'} Market..."):
-        leaders = get_dynamic_leaders(is_cad)
-        
-    if not leaders:
-        st.warning("No active leads found. Check your FMP quota or connection.")
-        return
+if raw_data:
+    tab_cad, tab_usd = st.tabs(["🇨🇦 Canada (TSX)", "🇺🇸 USA (NYSE/NASDAQ)"])
 
-    cols = st.columns(3)
-    display_count = 0
-    
-    for stock in leaders:
-        if display_count >= 6: break # Showing top 6
+    def process_tab(is_cad):
+        # 1. Filter for Region and Price
+        if is_cad:
+            # TSX stocks in FMP usually end in .TO
+            filtered = [s for s in raw_data if s['symbol'].endswith(".TO") and s['price'] < 150]
+        else:
+            # US stocks (NYSE/NASDAQ) and under $150
+            filtered = [s for s in raw_data if s['exchangeShortName'] in ['NYSE', 'NASDAQ'] and s['price'] < 150]
+
+        if not filtered:
+            st.warning("No active stocks found for this criteria.")
+            return
+
+        cols = st.columns(3)
+        # 2. Pick top 6 by volume/activity to show 'leaders'
+        display_list = filtered[:6] 
         
-        ticker = stock['symbol']
-        price = stock['price']
-        name = stock['companyName']
-        
-        hist = get_history(ticker)
-        if hist is not None and not hist.empty:
-            growth = ((price - hist.iloc[0]) / hist.iloc[0]) * 100
+        for i, stock in enumerate(display_list):
+            ticker = stock['symbol']
+            price = stock['price']
+            name = stock['name']
             
-            with cols[display_count % 3]:
-                st.metric(label=f"{ticker} ({name})", 
-                          value=f"${price:.2f}", 
-                          delta=f"{growth:.1f}% (2Y)")
-                st.line_chart(hist, height=200)
-                display_count += 1
+            hist = get_history(ticker)
+            if hist is not None and not hist.empty:
+                growth = ((price - hist.iloc[0]) / hist.iloc[0]) * 100
+                with cols[i % 3]:
+                    st.metric(label=f"{ticker}", value=f"${price:.2f}", delta=f"{growth:.1f}% (2Y)")
+                    st.caption(name)
+                    st.line_chart(hist, height=180)
 
-with tab_cad:
-    render_market(is_cad=True)
-
-with tab_usd:
-    render_market(is_cad=False)
+    with tab_cad:
+        process_tab(is_cad=True)
+    with tab_usd:
+        process_tab(is_cad=False)
+else:
+    st.warning("Please refresh the page. The API connection is currently reset.")
